@@ -4,12 +4,13 @@ import keras
 import numpy as np
 import random
 
-
+import time
 
 
 
 class RingBuf:
     def __init__(self, size):
+        self.size = size
         # Pro-tip: when implementing a ring buffer, always allocate one extra element,
         # this way, self.start == self.end always means the buffer is EMPTY, whereas
         # if you allocate exactly the right number of elements, it could also mean
@@ -39,20 +40,32 @@ class RingBuf:
         for i in range(len(self)):
             yield self[i]
     def sample_batch(self, size):
-        sample = np.random.choice(self.data, size, replace=False)
-        start_states = []
-        actions = []
+       # if(self.__len__() == self.size):
+        #print(self.__len__())
+        randIndex = random.sample(range(self.__len__()), size)
+        randIndex.sort()
+        sample = [self.data[i] for i in randIndex]
+        #sample = np.random.choice(self.data, size, replace=False)
+        #else:
+            #subdata = self.data[0:self.end]
+            #print(subdata)
+            #sample = np.random.choice(subdata, size, replace=False)
+        start_states = np.zeros((size, 4, 105, 80))
+        actions = np.zeros((size, 4))
         rewards = []
-        next_states = []
+        next_states = np.zeros((size, 4, 105, 80))
         is_terminal = []
-
+        index = 0
         for x in sample:
-            print(sample)
-            start_states.append(x[0])
-            actions.append(x[1])
-            rewards.append(x[2])
-            next_states.append(x[3])
+            #print(sample)
+            start_states[index] = x[0]
+            actions[index][x[1]] = 1
+            next_states[index] = x[2]
+            rewards.append(x[3])
+
+
             is_terminal.append(x[4])
+            index += 1
         return (start_states, actions, rewards, next_states, is_terminal)
 
 def to_grayscale(img):
@@ -85,11 +98,13 @@ def fit_batch(model, gamma, start_states, actions, rewards, next_states, is_term
 
     """
     # First, predict the Q values of the next states. Note how we are passing ones as the mask.
-    next_Q_values = model.predict([next_states, np.ones(actions.shape)])
+    next_Q_values = model.predict([next_states, np.ones((32, 4))])
     # The Q values of the terminal states is 0 by definition, so override them
     next_Q_values[is_terminal] = 0
     # The Q values of each start state is the reward + gamma * the max next state Q value
-    Q_values = rewards + gamma * np.max(next_Q_values, axis=1)
+    max_q = np.max(next_Q_values, axis=1)
+    #print(rewards)
+    Q_values = rewards + gamma * max_q
     # Fit the keras model. Note how we are passing the actions as the mask and multiplying
     # the targets by the actions.
     model.fit(
@@ -130,6 +145,7 @@ def atari_model(n_actions):
     model = keras.models.Model(input=[frames_input, actions_input], output=filtered_output)
     optimizer = optimizer = keras.optimizers.RMSprop(lr=0.00025, rho=0.95, epsilon=0.01)
     model.compile(optimizer, loss='mse')
+
     return model
 
 
@@ -143,55 +159,90 @@ def q_iteration(env, model, state, iteration, memory):
     # Choose epsilon based on the iteration
     epsilon = get_epsilon_for_iteration(iteration)
 
+
+
     # Choose the action
     if random.random() < epsilon:
         action = env.action_space.sample()
+
     else:
         action = choose_best_action(model, state)
 
+
     # Play one game iteration (note: according to the next paper, you should actually play 4 times here)
-    new_frame, reward, is_done, _ = env.step(action)
-    memory.append((state, action, new_frame, reward, is_done))
+    #print(action)
+    frames = np.zeros((1, 4, 105, 80))
+    for i in range(4):
+        new_frame, reward, is_done, _ = env.step(action)
+
+        new_frame = preprocess(new_frame)
+        frames[0][i] = new_frame
+        if is_done:
+            break
+    actions = np.ones((1, 4))
+    # print(actions)
+    new_state = frames
+
+    memory.append((state, action, frames, reward, is_done))
 
     #Sample and fit
-    batch = memory.sample_batch(32)
-    fit_batch(model, batch[0], batch[1], batch[2], batch[3], batch[4], batch[5])
+    if (iteration > buffer_size):
+        batch = memory.sample_batch(32)
+
+        print(iteration)
+        fit_batch(model, 0.99, batch[0], np.array(batch[1]), batch[2], np.array(batch[3]), batch[4])
+
+    return (new_state, is_done);
 
 def choose_best_action(model, state):
-    output = model.predict(state, batch_size=None, verbose=0, steps=None)
-    #print(output)
-    return output.max()
+
+    output = model.predict([state, np.ones((1, 4))], batch_size=None, verbose=0, steps=None)
+
+    return output.argmax()
 
 
-model = atari_model(18)
-# Create a breakout environment
-env = gym.make('BreakoutDeterministic-v4')
-# Reset it, returns the starting frame
-frame = env.reset()
-# Render
-env.render()
+buffer_size = 300
 
-frame_list = []
-#frames = np.zeros(4, 105, 80)
-i = 0
-is_done = False
-memoryBuffer = RingBuf(100)
-while True:
-
-
-    frame_list.insert(0, preprocess(frame))
-
+def main():
+    model = atari_model(4)
+    # Create a breakout environment
+    env = gym.make('BreakoutDeterministic-v4')
+    # Reset it, returns the starting frame
+    frame = env.reset()
+    # Render
     env.render()
-    #print(frame_list)
-    state = []
-    is_done = q_iteration(env, model, state, i, memoryBuffer)
-    i += 1
 
-# Perform a random action, returns the new frame, reward and whether the game is over
-#frame, reward, is_done, _ = env.step(env.action_space.sample())
-    if (is_done):
-        env.reset()
-        is_done = False
-        i = 0
-# Render
-env.render()
+    frame_list = []
+    #frames = np.zeros(4, 105, 80)
+    i = 0
+    memoryBuffer = RingBuf(buffer_size)
+    is_done = False
+
+    action = env.action_space.sample()
+    frame, reward, is_done, _ = env.step(action)
+
+    frames = np.zeros((1, 4,105,80))
+    frame = preprocess(frame)
+    frames[0][0] = frame
+    actions = np.ones((1,4))
+    #print(actions)
+    state = frames
+
+    while True:
+
+
+
+        env.render()
+
+        (state, is_done) = q_iteration(env, model, state, i, memoryBuffer)
+        i += 1
+
+        # Perform a random action, returns the new frame, reward and whether the game is over
+        #frame, reward, is_done, _ = env.step(env.action_space.sample())
+        if (is_done):
+            env.reset()
+            print("failed")
+            is_done = False
+
+
+main()
