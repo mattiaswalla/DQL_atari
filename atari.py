@@ -1,5 +1,6 @@
 # Import the gym module
 import gym
+
 import keras
 import numpy as np
 import random
@@ -52,21 +53,20 @@ class RingBuf:
             #sample = np.random.choice(subdata, size, replace=False)
         start_states = np.zeros((size, 4, 105, 80))
         actions = np.zeros((size, 4))
-        rewards = []
+        rewards = np.zeros((size))
         next_states = np.zeros((size, 4, 105, 80))
         is_terminal = []
         index = 0
+        #print(randIndex)
         for x in sample:
             #print(sample)
             start_states[index] = x[0]
             actions[index][x[1]] = 1
             next_states[index] = x[2]
-            rewards.append(x[3])
-
-
-            is_terminal.append(x[4])
+            rewards[index] = x[3]
+            is_terminal.append(x[4]) 
             index += 1
-        return (start_states, actions, rewards, next_states, is_terminal)
+        return (start_states, actions, rewards, next_states, np.array(is_terminal))
 
 def to_grayscale(img):
     return np.mean(img, axis=2).astype(np.uint8)
@@ -98,7 +98,7 @@ def fit_batch(model, gamma, start_states, actions, rewards, next_states, is_term
 
     """
     # First, predict the Q values of the next states. Note how we are passing ones as the mask.
-    next_Q_values = model.predict([next_states, np.ones((32, 4))])
+    next_Q_values = model.predict([next_states, np.ones(actions.shape)])
     # The Q values of the terminal states is 0 by definition, so override them
     next_Q_values[is_terminal] = 0
     # The Q values of each start state is the reward + gamma * the max next state Q value
@@ -109,7 +109,7 @@ def fit_batch(model, gamma, start_states, actions, rewards, next_states, is_term
     # the targets by the actions.
     model.fit(
         [start_states, actions], actions * Q_values[:, None],
-        nb_epoch=1, batch_size=len(start_states), verbose=0
+        epochs=1, batch_size=len(start_states), verbose=0
     )
 
 
@@ -122,7 +122,7 @@ def atari_model(n_actions):
     actions_input = keras.layers.Input((n_actions,), name='mask')
 
     # Assuming that the input frames are still encoded from 0 to 255. Transforming to [0, 1].
-    normalized = keras.layers.Lambda(lambda x: x / 255.0)(frames_input)
+    normalized = keras.layers.Lambda(lambda x: x / 255.0, output_shape=ATARI_SHAPE)(frames_input)
 
     # "The first hidden layer convolves 16 8×8 filters with stride 4 with the input image and applies a rectifier nonlinearity."
     conv_1 = keras.layers.Conv2D(16, (8, 8),
@@ -140,7 +140,7 @@ def atari_model(n_actions):
     # "The output layer is a fully-connected linear layer with a single output for each valid action."
     output = keras.layers.Dense(n_actions)(hidden)
     # Finally, we multiply the output by the mask!
-    filtered_output = keras.layers.merge([output, actions_input], mode='mul')
+    filtered_output = keras.layers.multiply([output, actions_input])
 
     model = keras.models.Model(input=[frames_input, actions_input], output=filtered_output)
     optimizer = optimizer = keras.optimizers.RMSprop(lr=0.00025, rho=0.95, epsilon=0.01)
@@ -153,7 +153,7 @@ def get_epsilon_for_iteration(iteration):
     if iteration < 4:
         return 1
     else:
-        return 0.01
+        return 0.1
 
 def q_iteration(env, model, state, iteration, memory):
     # Choose epsilon based on the iteration
@@ -172,39 +172,45 @@ def q_iteration(env, model, state, iteration, memory):
     # Play one game iteration (note: according to the next paper, you should actually play 4 times here)
     #print(action)
     frames = np.zeros((1, 4, 105, 80))
+    reward_sum = 0
+    reset = False
     for i in range(4):
         new_frame, reward, is_done, _ = env.step(action)
-
+        reward_sum += reward
+        reset = is_done or reset
         new_frame = preprocess(new_frame)
         frames[0][i] = new_frame
-        if is_done:
-            break
+
     actions = np.ones((1, 4))
     # print(actions)
     new_state = frames
 
-    memory.append((state, action, frames, reward, is_done))
-
+    memory.append((state, action, frames, reward_sum, reset))
     #Sample and fit
     if (iteration > buffer_size):
         batch = memory.sample_batch(32)
 
-        print(iteration)
-        fit_batch(model, 0.99, batch[0], np.array(batch[1]), batch[2], np.array(batch[3]), batch[4])
+        #print(iteration)
+        fit_batch(model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4])
 
-    return (new_state, is_done);
+    if (iteration % 1000 == 0):
+        print("saved:")
+        print(iteration)
+        model.save("model_weights_2018_05_09.HDF5")
+    return (new_state, reset);
 
 def choose_best_action(model, state):
 
     output = model.predict([state, np.ones((1, 4))], batch_size=None, verbose=0, steps=None)
-
+    #print(output)
     return output.argmax()
 
 
-buffer_size = 300
+buffer_size = 50000
 
 def main():
-    model = atari_model(4)
+    #model = atari_model(4)
+    model = keras.models.load_model("model_weights_2018_05_09.HDF5")
     # Create a breakout environment
     env = gym.make('BreakoutDeterministic-v4')
     # Reset it, returns the starting frame
@@ -241,7 +247,7 @@ def main():
         #frame, reward, is_done, _ = env.step(env.action_space.sample())
         if (is_done):
             env.reset()
-            print("failed")
+            print("reset")
             is_done = False
 
 
