@@ -4,9 +4,25 @@ import gym
 import keras
 import numpy as np
 import random
-
+import tensorflow as tf
 import time
+from keras import backend as K
+from tensorflow.python.client import device_lib
+print(device_lib.list_local_devices())
+from threading import Thread
 
+
+class trainThread (Thread):
+    def __init__(self, threadID, name):
+        Thread.__init__(self)
+        self.threadID = threadID
+        self.name = name
+        
+
+    def set_args(self, args):
+        self.args = args
+    def run(self):
+        fit_batch(self.args[0], self.args[1], self.args[2], self.args[3], self.args[4], self.args[5], self.args[6], )
 
 
 class RingBuf:
@@ -189,9 +205,11 @@ def q_iteration(env, model, state, iteration, memory):
     BATCH_SIZE = 32
     if (iteration > BATCH_SIZE):
         batch = memory.sample_batch(BATCH_SIZE)
-
         #print(iteration)
-        fit_batch(model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4])
+        #fit_batch(model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4])
+
+        thread.set_args([model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4]])
+        thread.run()
 
     if (iteration % 1000 == 0):
         print("saved:")
@@ -207,12 +225,21 @@ def choose_best_action(model, state):
 
 
 buffer_size = 200000
+thread = trainThread(1, "Thread-1")
+
 
 def main():
+    config = tf.ConfigProto(intra_op_parallelism_threads=4, \
+                            inter_op_parallelism_threads=4, allow_soft_placement=True, \
+                            device_count={'CPU': 1, 'GPU': 1})
+    session = tf.Session(config=config)
+    K.set_session(session)
+
     #model = atari_model(4)
     model = keras.models.load_model("model_weights_2018_05_09_V2.HDF5")
     # Create a breakout environment
     env = gym.make('BreakoutDeterministic-v4')
+
     # Reset it, returns the starting frame
     frame = env.reset()
     # Render
@@ -233,7 +260,6 @@ def main():
     actions = np.ones((1,4))
     #print(actions)
     state = frames
-
     while True:
 
 
