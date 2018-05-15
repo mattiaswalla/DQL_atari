@@ -7,17 +7,19 @@ import random
 import tensorflow as tf
 import time
 from keras import backend as K
-from tensorflow.python.client import device_lib
-print(device_lib.list_local_devices())
+
+#from tensorflow.python.client import device_lib
+#print(device_lib.list_local_devices())
 from threading import Thread
 
+K.set_image_dim_ordering('th')
 
 class trainThread (Thread):
     def __init__(self, threadID, name):
         Thread.__init__(self)
         self.threadID = threadID
         self.name = name
-        
+
 
     def set_args(self, args):
         self.args = args
@@ -67,21 +69,21 @@ class RingBuf:
             #subdata = self.data[0:self.end]
             #print(subdata)
             #sample = np.random.choice(subdata, size, replace=False)
-        start_states = np.zeros((size, 4, 105, 80))
+        start_states = np.zeros((size, numFrames, 105, 80))
         actions = np.zeros((size, 4))
         rewards = np.zeros((size))
-        next_states = np.zeros((size, 4, 105, 80))
+        next_states = np.zeros((size, numFrames, 105, 80))
         is_terminal = []
         index = 0
         #print(randIndex)
         for x in randIndex:
-            #print(sample)
-            for i in range (4) :
-                start_states[index][3-i] = self.data[(x-i-1)%self.__len__()][1]
-                next_states[index][3-i] = self.data[(x-i)%self.__len__()][1]
-            actions[index][self.data[x][0]] = 1            
+            #print(x, " ", index, " ", self.data[x][0])
+            for i in range (numFrames) :
+                start_states[index][numFrames-1-i] = self.data[(x-i-1)%self.__len__()][1]
+                next_states[index][numFrames-1-i] = self.data[(x-i)%self.__len__()][1]
+            actions[index][self.data[x][0]] = 1
             rewards[index] = self.data[x][2]
-            is_terminal.append(self.data[x][3]) 
+            is_terminal.append(self.data[x][3])
             index += 1
         return (start_states, actions, rewards, next_states, np.array(is_terminal))
 
@@ -132,7 +134,7 @@ def fit_batch(model, gamma, start_states, actions, rewards, next_states, is_term
 
 def atari_model(n_actions):
     # We assume a theano backend here, so the "channels" are first.
-    ATARI_SHAPE = (4, 105, 80)
+    ATARI_SHAPE = (numFrames, 105, 80)
 
     # With the functional API we need to define the inputs.
     frames_input = keras.layers.Input(ATARI_SHAPE, name='frames')
@@ -142,13 +144,20 @@ def atari_model(n_actions):
     normalized = keras.layers.Lambda(lambda x: x / 255.0, output_shape=ATARI_SHAPE)(frames_input)
 
     # "The first hidden layer convolves 16 8×8 filters with stride 4 with the input image and applies a rectifier nonlinearity."
-    conv_1 = keras.layers.Conv2D(16, (8, 8),
-                                 strides=(4, 4), activation='relu'
-                                 )(normalized)
+    conv_1 = keras.layers.convolutional.Convolution2D(
+        16, 8, 8, subsample=(4, 4), activation='relu'
+    )(normalized)
+
+    #Autoencoding
+    #x = keras.Conv2D(16, (8, 8), activation='relu', padding='same')(conv_1)
+    #decoded = keras.Conv2D(numFrames, (8, 8), activation='sigmoid', padding='same')(x)
+
+
+    #end of autoencoding
     # "The second hidden layer convolves 32 4×4 filters with stride 2, again followed by a rectifier nonlinearity."
-    conv_2 = keras.layers.Conv2D(32, (4, 4),
-                                 strides=(2, 2), activation='relu'
-                                 )(conv_1)
+    conv_2 = keras.layers.convolutional.Convolution2D(
+        32, 4, 4, subsample=(2, 2), activation='relu'
+    )(conv_1)
     # Flattening the second convolutional layer.
     conv_flattened = keras.layers.Flatten()(conv_2)
 
@@ -167,8 +176,9 @@ def atari_model(n_actions):
 
 
 def get_epsilon_for_iteration(iteration):
-    if iteration < 10000:
-        return 1
+    num_iterations = 4000
+    if iteration < 4000:
+        return 1 - 0.9/(iteration+1)
     else:
         return 0.1
 
@@ -193,14 +203,19 @@ def q_iteration(env, model, state, iteration, memory):
 
 
     new_frame, reward, is_done, _ = env.step(action)
-    new_frame = preprocess(new_frame) 
+    new_frame = preprocess(new_frame)
     memory.append((action, new_frame, reward, is_done))
-    state[0][0] = state[0][1]
-    state[0][1] = state[0][2]
-    state[0][2] = state[0][3]
-    state[0][3] = new_frame
 
-    
+    #state = state.copy()
+    for i in range(numFrames-1):
+        state[0][i-1] = state[0][i+1]
+    state[0][numFrames - 1] = new_frame
+    #state[0][0] = state[0][1]
+    #state[0][1] = state[0][2]
+    #state[0][2] = state[0][3]
+    #state[0][3] = new_frame
+
+
     #Sample and fit
     BATCH_SIZE = 32
     if (iteration > BATCH_SIZE):
@@ -214,7 +229,7 @@ def q_iteration(env, model, state, iteration, memory):
     if (iteration % 1000 == 0):
         print("saved:")
         print(iteration)
-        model.save("model_weights_2018_05_09_V2.HDF5")
+        model.save("model_weights_2018_05_09_V3.HDF5")
     return (state, is_done);
 
 def choose_best_action(model, state):
@@ -226,7 +241,7 @@ def choose_best_action(model, state):
 
 buffer_size = 200000
 thread = trainThread(1, "Thread-1")
-
+numFrames = 2
 
 def main():
     config = tf.ConfigProto(intra_op_parallelism_threads=4, \
@@ -235,11 +250,11 @@ def main():
     session = tf.Session(config=config)
     K.set_session(session)
 
-    #model = atari_model(4)
-    model = keras.models.load_model("model_weights_2018_05_09_V2.HDF5")
+    model = atari_model(4)
+    #model = keras.models.load_model("model_weights_2018_05_09_V3.HDF5")
     # Create a breakout environment
     env = gym.make('BreakoutDeterministic-v4')
-
+    #env = gym.make("Pong-v0")
     # Reset it, returns the starting frame
     frame = env.reset()
     # Render
@@ -254,7 +269,7 @@ def main():
     action = env.action_space.sample()
     frame, reward, is_done, _ = env.step(action)
 
-    frames = np.zeros((1, 4,105,80))
+    frames = np.zeros((1, numFrames,105,80))
     frame = preprocess(frame)
     frames[0][0] = frame
     actions = np.ones((1,4))
