@@ -130,7 +130,41 @@ def fit_batch(model, gamma, start_states, actions, rewards, next_states, is_term
         [start_states, actions], actions * Q_values[:, None],
         epochs=1, batch_size=len(start_states), verbose=0
     )
+def pre_train(model, frames):
+    # First, predict the Q values of the next states. Note how we are passing ones as the mask.
 
+    # Fit the keras model. Note how we are passing the actions as the mask and multiplying
+    # the targets by the actions.
+    #print(frames)
+    model.fit(
+        frames, frames,
+        epochs=1, batch_size=len(frames), verbose=0
+    )
+
+def pretraining_model():
+    # We assume a theano backend here, so the "channels" are first.
+    ATARI_SHAPE = (numFrames, 105, 80)
+
+    # With the functional API we need to define the inputs.
+    frames_input = keras.layers.Input(ATARI_SHAPE, name='frames')
+
+    # Assuming that the input frames are still encoded from 0 to 255. Transforming to [0, 1].
+    normalized = keras.layers.Lambda(lambda x: x / 255.0, output_shape=ATARI_SHAPE)(frames_input)
+
+    # "The first hidden layer convolves 16 8×8 filters with stride 4 with the input image and applies a rectifier nonlinearity."
+    conv_1 = keras.layers.Convolution2D(
+        16, (8, 8), activation='relu', padding='same'
+    )(normalized)
+    
+
+    # Autoencoding
+    x = keras.layers.Convolution2D(16, (8, 8), activation='sigmoid', padding='same')(conv_1)
+    decoded = keras.layers.Convolution2D(numFrames, (8, 8), activation='sigmoid', padding='same')(x)
+    model = keras.models.Model(frames_input, decoded)
+    optimizer = keras.optimizers.RMSprop(lr=0.00025, rho=0.95, epsilon=0.01)
+    model.compile(optimizer, loss='mse')
+
+    return model
 
 def atari_model(n_actions):
     # We assume a theano backend here, so the "channels" are first.
@@ -149,8 +183,8 @@ def atari_model(n_actions):
     )(normalized)
 
     #Autoencoding
-    #x = keras.Conv2D(16, (8, 8), activation='relu', padding='same')(conv_1)
-    #decoded = keras.Conv2D(numFrames, (8, 8), activation='sigmoid', padding='same')(x)
+    x = keras.layers.convolutional.Convolution2D(16, (8, 8), activation='relu', padding='same')(conv_1)
+    decoded = keras.layers.convolutional.Convolution2D(numFrames, (8, 8), activation='sigmoid', padding='same')(x)
 
 
     #end of autoencoding
@@ -217,15 +251,18 @@ def q_iteration(env, model, state, iteration, memory):
 
 
     #Sample and fit
-    BATCH_SIZE = 32
+
     if (iteration > BATCH_SIZE):
         batch = memory.sample_batch(BATCH_SIZE)
-        #print(iteration)
-        #fit_batch(model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4])
+        if(iteration > 3000):
 
-        thread.set_args([model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4]])
-        thread.run()
+            #   print(iteration)
+            #fit_batch(model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4])
 
+            thread.set_args([model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4]])
+            thread.run()
+        else:
+            pre_train(model_pre, batch[0])
     if (iteration % 1000 == 0):
         print("saved:")
         print(iteration)
@@ -242,7 +279,8 @@ def choose_best_action(model, state):
 buffer_size = 200000
 thread = trainThread(1, "Thread-1")
 numFrames = 2
-
+model_pre = pretraining_model()
+BATCH_SIZE = 32
 def main():
     config = tf.ConfigProto(intra_op_parallelism_threads=4, \
                             inter_op_parallelism_threads=4, allow_soft_placement=True, \
