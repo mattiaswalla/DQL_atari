@@ -283,9 +283,7 @@ def q_iteration(env, model, state, iteration, memory, model_pre):
     new_frame, reward, is_done, _ = env.step(action)
     new_frame = preprocess(new_frame)
     memory.append((action, new_frame, reward, is_done))
-    if(reward > 0):
-        print(reward)
-    #state = state.copy()
+    
     for i in range(numFrames-1):
         state[0][i-1] = state[0][i+1]
     state[0][numFrames - 1] = new_frame
@@ -337,7 +335,7 @@ REWARD_FRAME_SIZE = 32
 ATARI_SHAPE = (numFrames, 104, 80)
 
 #epsilon
-LIMIT_1 = PRETRAINING_TIMES #epsilon = 1 untill this number
+LIMIT_1 = 100000 #epsilon = 1 untill this number
 LIMIT_2 = 500000 #after this number epsilon = value
 VALUE = 0.1
 
@@ -394,14 +392,11 @@ def main():
             weights_1 = model_pre.get_layer("conv2d_3").get_weights()
             weights_2 = model_pre.get_layer("conv2d_4").get_weights()            
             model.get_layer("conv2d_1").set_weights(weights_1)
-            model.get_layer("conv2d_2").set_weights(weights_2)
-            batch = memoryBuffer.reward_batch()
-            if( len(batch[0]) >0 ):                
-                fit_batch(model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4], REWARD_FRAME_SIZE )
+            model.get_layer("conv2d_2").set_weights(weights_2)            
             
         if i >= PRETRAINING_TIMES and i % 5000 ==0 :
             print("saved:")
-            print(iteration)
+            print(i)
             print(benchmark)
             model.save("model_weights_2018_05_16_PRETRAIN.HDF5")
             benchmark = 0
