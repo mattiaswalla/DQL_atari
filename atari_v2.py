@@ -328,7 +328,7 @@ BATCH_SIZE = 64
 PRE_EPOCH = 8
 EPOCH = BATCH_SIZE//32
 REWARD_BATCH_EPOCH = 16
-PRETRAINING_TIMES = 10000
+PRETRAINING_TIMES = 0
 REWARD_FRAME_SIZE = 32
 
 # We assume a theano backend here, so the "channels" are first.
@@ -377,7 +377,7 @@ def main():
     #print(actions)
     state = frames
     benchmark = 0
-    while True:
+    while i<= 1000000:
 
         
 
@@ -394,11 +394,11 @@ def main():
             model.get_layer("conv2d_1").set_weights(weights_1)
             model.get_layer("conv2d_2").set_weights(weights_2)            
             
-        if i >= PRETRAINING_TIMES and i % 5000 ==0 :
+        if i > PRETRAINING_TIMES and i % 5000 ==0 :
             print("saved:")
             print(i)
             print(benchmark)
-            model.save("model_weights_2018_05_16_PRETRAIN.HDF5")
+            model.save("model_weights_2018_05_16_No_Pretrain.HDF5")
             benchmark = 0
             batch = memoryBuffer.reward_batch()
             if( len(batch[0]) >0 and i < LIMIT_2): 
