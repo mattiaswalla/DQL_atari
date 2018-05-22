@@ -4,10 +4,13 @@ import gym
 import keras
 import numpy as np
 import random
+from random import randint
 import tensorflow as tf
 import time
 from keras import backend as K
 import pickle
+import skimage.measure
+import skimage.transform
 #from tensorflow.python.client import device_lib
 #print(device_lib.list_local_devices())
 from threading import Thread
@@ -59,22 +62,29 @@ class RingBuf:
     def __iter__(self):
         for i in range(len(self)):
             yield self[i]
+
+    def shrinkFrames(self):
+        for i in range(self.__len__()):
+            self.data[i] = (self.data[i][0], self.data[i][1][26:98, :], self.data[i][2], self.data[i][3])
+
+
     def reward_batch(self):
         batch = []
-        for i in range(self.__len__()):
+        for i in range(randint(randint(0,self.__len__()), self.__len__())):
             if(self.data[i][2] > 0):
-                i
+
                 for x in range (i-REWARD_FRAME_SIZE,i):
                     batch.insert(0, x%self.__len__() )
-            if(len(batch) > BATCH_SIZE * REWARD_FRAME_SIZE):
+
+            if(len(batch) > BATCH_SIZE * REWARD_FRAME_SIZE/100):
                 break
 
                 
         size = len(batch)
-        start_states = np.zeros((size, numFrames, 104, 80))
+        start_states = np.zeros((size, numFrames, ATARI_SHAPE[1], ATARI_SHAPE[2]))
         actions = np.zeros((size, NUM_ACTIONS))
-        rewards = np.zeros((size))
-        next_states = np.zeros((size, numFrames, 104, 80))
+        rewards = np.zeros(size)
+        next_states = np.zeros((size, numFrames, ATARI_SHAPE[1], ATARI_SHAPE[2]))
         is_terminal = []
         index = 0
         
@@ -99,10 +109,10 @@ class RingBuf:
             #subdata = self.data[0:self.end]
             #print(subdata)
             #sample = np.random.choice(subdata, size, replace=False)
-        start_states = np.zeros((size, numFrames, 104, 80))
+        start_states = np.zeros((size, numFrames, ATARI_SHAPE[1], ATARI_SHAPE[2]))
         actions = np.zeros((size, NUM_ACTIONS))
         rewards = np.zeros((size))
-        next_states = np.zeros((size, numFrames, 104, 80))
+        next_states = np.zeros((size, numFrames, ATARI_SHAPE[1], ATARI_SHAPE[2]))
         is_terminal = []
         index = 0
         #print(randIndex)
@@ -126,14 +136,16 @@ def downsample(img):
 
 
 def preprocess(img):
-    return to_grayscale(downsample(img[0:208,:,:]))
+    img = to_grayscale(downsample(img[0:208, :, :]))
+    img = img[26:98, :]
+    return img
 
 
 def transform_reward(reward):
     return np.sign(reward)
 
 
-def fit_batch(model, gamma, start_states, actions, rewards, next_states, is_terminal, epochs_n):
+def fit_batch(model, target_model, gamma, start_states, actions, rewards, next_states, is_terminal, epochs_n):
     """Do one deep Q learning iteration.
 
     Params:
@@ -146,8 +158,11 @@ def fit_batch(model, gamma, start_states, actions, rewards, next_states, is_term
     - is_terminal: numpy boolean array of whether the resulting state is terminal
 
     """
+    #start_states[:, :, 0:48, :].fill(0)
+    #next_states[:, :, 0:48, :].fill(0)
+
     # First, predict the Q values of the next states. Note how we are passing ones as the mask.
-    next_Q_values = model.predict([next_states, np.ones(actions.shape)])
+    next_Q_values = target_model.predict([next_states, np.ones(actions.shape)])
     # The Q values of the terminal states is 0 by definition, so override them
     next_Q_values[is_terminal] = 0
     # The Q values of each start state is the reward + gamma * the max next state Q value
@@ -156,21 +171,42 @@ def fit_batch(model, gamma, start_states, actions, rewards, next_states, is_term
     Q_values = rewards + gamma * max_q
     # Fit the keras model. Note how we are passing the actions as the mask and multiplying
     # the targets by the actions.
+    #actions[:][0] = 0
     model.fit(
         [start_states, actions], actions * Q_values[:, None],
         epochs=epochs_n, batch_size=len(start_states), verbose=0
     )
 
-    
+
+def downPool(size, frames):
+
+    goal = np.zeros((len(frames), len(frames[0]) // size, len(frames[0][0]) // size))
+    for i in range(len(frames)):
+        goal[i] = skimage.measure.block_reduce(frames[i], (size, size), np.max)
+    return goal
+
+def downPoolBatch(size, frames):
+    goal = np.zeros((len(frames), len(frames[0]), len(frames[0][0]) // 4, len(frames[0][0][0]) // 4))
+    for i in range(len(frames)):
+        goal[i] = downPool(4, frames[i])
+    return goal
+
 def pre_train(model, frames, epochs_n):
     # First, predict the Q values of the next states. Note how we are passing ones as the mask.
 
     # Fit the keras model. Note how we are passing the actions as the mask and multiplying
     # the targets by the actions.
-    # print(frames.shape)
+    # print(frames.shape)'
+    goal = downPoolBatch(4, frames)
+    #goal = np.zeros((len(frames), ATARI_SHAPE[0], ATARI_SHAPE[1]//4, ATARI_SHAPE[2]//4))
+    #for i in range(len(frames)):
+        #goal[i] = downPool(4, frames[i])
+        #for j in range(len(frames[i])):
+            #goal[i][j] = skimage.measure.block_reduce(frames[i][j], (4, 4), np.max)
+
 
     model.fit(
-        frames, frames,
+        frames, [goal, frames],
         epochs=epochs_n, batch_size=len(frames), verbose=0
     )
 
@@ -185,36 +221,45 @@ def pretraining_model():
 
     # "The first hidden layer convolves 16 8×8 filters with stride 4 with the input image and applies a rectifier nonlinearity."
     conv_1 = keras.layers.Conv2D(
-        16, (8, 8), strides = (4,4), activation='relu', padding='same'
+        16, (8, 8), strides = (2,2), activation='relu', padding='same'
     )(normalized)
 
-    #pooling_1 = keras.layers.MaxPooling2D(pool_size=(4, 4))(conv_1)
     # "The second hidden layer convolves 32 4×4 filters with stride 2, again followed by a rectifier nonlinearity."
     conv_2 = keras.layers.Conv2D(
         32, (4, 4), strides = (2,2), activation='relu', padding='same'
     )(conv_1)    
 
-    #pooling_2 = keras.layers.MaxPooling2D(pool_size = (2, 2))(conv_2)
-    
     up_1 = keras.layers.UpSampling2D((2, 2))(conv_2)
     # Autoencoding
 
-    
-    decoded_1 = keras.layers.Conv2D(
+    decoded_a = keras.layers.Conv2D(
         32, (4, 4), activation='relu', padding='same'
     )(up_1)
 
-    up_2 = keras.layers.UpSampling2D((4,4))(decoded_1)
-    
-    decoded_2 = keras.layers.Conv2D(
+    decoded_1 = keras.layers.Conv2D(
+        32, (4, 4), activation='relu', padding='same'
+    )(conv_2)
+
+    up_2 = keras.layers.UpSampling2D((2, 2))(decoded_a)
+
+    decoded_b = keras.layers.Conv2D(
         numFrames, (8, 8), activation='sigmoid', padding='same'
     )(up_2)
-    
-    unnormalized = keras.layers.Lambda(lambda x: x*255.0, output_shape = ATARI_SHAPE)(decoded_2)
-    model = keras.models.Model(frames_input, unnormalized)
+
+    unnormalized_b = keras.layers.Lambda(lambda x: x * 255.0,
+                                       output_shape=ATARI_SHAPE)(decoded_b)
+
+    decoded_2 = keras.layers.Conv2D(
+        numFrames, (8, 8), activation='sigmoid', padding='same'
+    )(decoded_1)
+
+
+    #decoded_2 = keras.layers.Add()([decoded_2, decoded_aux])
+
+    unnormalized = keras.layers.Lambda(lambda x: x*255.0, output_shape = (numFrames, ATARI_SHAPE[1]//4, ATARI_SHAPE[2]//4))(decoded_2)
+    model = keras.models.Model(frames_input, [unnormalized, unnormalized_b])
     optimizer = keras.optimizers.RMSprop(lr=0.00025, rho=0.95, epsilon=0.01)
     model.compile(optimizer, loss='mse')
-
     return model
 
 def atari_model( n_actions):
@@ -230,15 +275,14 @@ def atari_model( n_actions):
 
     # "The first hidden layer convolves 16 8×8 filters with stride 4 with the input image and applies a rectifier nonlinearity."
     conv_1 = keras.layers.Conv2D(
-        16, (8, 8),  activation='relu'
-    )(normalized)    
-    
-    pooling_1 = keras.layers.MaxPooling2D(pool_size=(4, 4))(conv_1)
+        16, (8, 8), strides = (2,2), activation='relu', padding='same'
+    )(normalized)
+
     # "The second hidden layer convolves 32 4×4 filters with stride 2, again followed by a rectifier nonlinearity."
     conv_2 = keras.layers.Conv2D(
-        32, (4, 4), activation='relu'
-    )(pooling_1)
-    pooling_2 = keras.layers.MaxPooling2D(pool_size = (2, 2))(conv_2)
+        32, (4, 4), strides = (2,2), activation='relu', padding='same'
+    )(conv_1)
+    pooling_2 = keras.layers.MaxPooling2D(pool_size = (8, 8))(conv_2)
 
     # Flattening the second convolutional layer.
     conv_flattened = keras.layers.Flatten()(pooling_2)
@@ -265,10 +309,11 @@ def get_epsilon_for_iteration(iteration):
     else:
         return VALUE
 
-def q_iteration(env, model, state, iteration, memory, model_pre):
+def q_iteration(env, model, target_model, state, iteration, memory, model_pre):
     # Choose epsilon based on the iteration
     epsilon = get_epsilon_for_iteration(iteration)
-
+    output = model.predict([state, np.ones((1, 4))], batch_size=None, verbose=0, steps=None)
+    print(output)
 
 
     # Choose the action
@@ -298,15 +343,20 @@ def q_iteration(env, model, state, iteration, memory, model_pre):
 
     if (iteration > BATCH_SIZE):
         batch = memory.sample_batch(BATCH_SIZE)
-        fit_batch(model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4], EPOCH)
+        fit_batch(model, target_model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4], EPOCH)
 
     return (state, is_done);
 
 def choose_best_action(model, state):
 
     output = model.predict([state, np.ones((1, 4))], batch_size=None, verbose=0, steps=None)
-    #print(output)
+    print(output)
     return output.argmax()
+
+
+def copy_model(model):
+    model.save('tmp_model')
+    return keras.models.load_model('tmp_model')
 
 
 buffer_size = 1000000
@@ -317,12 +367,12 @@ BATCH_SIZE = 32
 PRE_BATCH_SIZE = 2
 PRE_EPOCH = 8 
 EPOCH = BATCH_SIZE//32
-REWARD_BATCH_EPOCH = 8
+REWARD_BATCH_EPOCH = 4
 PRETRAINING_TIMES = 0
-REWARD_FRAME_SIZE = 32
+REWARD_FRAME_SIZE = 64
 
 # We assume a theano backend here, so the "channels" are first.
-ATARI_SHAPE = (numFrames, 104, 80)
+ATARI_SHAPE = (numFrames, 72, 80)
 
 #epsilon
 LIMIT_1 = 0 #epsilon = 1 untill this number
@@ -341,7 +391,8 @@ def main():
 
     model = atari_model(NUM_ACTIONS)  
     model_pre = pretraining_model()
-    print (model_pre.summary())
+    print("Training model summary : \n", model.summary())
+    print ("Pre training model summary : \n", model_pre.summary())
     #model = keras.models.load_model("model_weights_2018_05_09_V3.HDF5")
     # Create a breakout environment
     env = gym.make('BreakoutDeterministic-v4')
@@ -349,18 +400,20 @@ def main():
     # Reset it, returns the starting frame
     frame = env.reset()
     # Render
-    env.render()
+    #env.render()
 
     frame_list = []
     #frames = np.zeros(4, 105, 80)
     i = 0
     memoryBuffer = pickle.load( open( "save_guided.p", "rb" ) )
+    memoryBuffer.shrinkFrames()
+    #memoryBuffer = RingBuf()
     is_done = False
 
     action = env.action_space.sample()
     frame, reward, is_done, _ = env.step(action)
 
-    frames = np.zeros((1, numFrames,104,80))
+    frames = np.zeros((1, numFrames,ATARI_SHAPE[1], ATARI_SHAPE[2]))
     frame = preprocess(frame)
     frames[0][0] = frame
     actions = np.ones((1,NUM_ACTIONS))
@@ -368,51 +421,63 @@ def main():
     state = frames
     benchmark = 0
         
-    for _ in range(memoryBuffer.__len__()//20):
+    for _ in range(memoryBuffer.__len__()//40):
         batch = memoryBuffer.sample_batch(PRE_BATCH_SIZE)
-        batch[0][:, :, 0:40, :].fill(255)
-        
+        #batch[0][:, :, 0:20, :].fill(0)
+        #batch[0][:, :, :, 0:10].fill(randint(0,255))
+        #batch[0][:, :, :, 70:80].fill(randint(0,255))
         pre_train(model_pre, batch[0], PRE_EPOCH)
 
     batch = memoryBuffer.sample_batch(BATCH_SIZE)
-    print(model_pre.evaluate(batch[0],batch[0], BATCH_SIZE))
+
+    print(model_pre.evaluate(batch[0],[downPoolBatch(4, batch[0]),batch[0]], BATCH_SIZE))
     
-    input_img = np.zeros((1, numFrames,104,80))
-    #batch[0][:, :, 0:40, :].fill(255)
+    input_img = np.zeros((1, numFrames,ATARI_SHAPE[1], ATARI_SHAPE[2]))
+    #batch[0][:, :, 0:48, :].fill(0)
+    #batch[0][:, :, :, 0:10].fill(0)
+    #batch[0][:, :, :, 70:80].fill(0)
     input_img[0] = batch[0][0]
     
-    data = model_pre.predict(input_img, batch_size=None, verbose=0, steps=None)[0][0]
-    
-    raw_img = np.concatenate((data, batch[0][0, 0]))
-    img = Image.fromarray(raw_img.astype(np.uint8))
+    output = model_pre.predict(input_img, batch_size=None, verbose=0, steps=None)
+    compressed, data = (output[0][0][0], output[1][0][0])
+    raw_img_a = np.concatenate((data, input_img[0][0]) ) # batch[0][0, 0]))
+    img_a = Image.fromarray(raw_img_a.astype(np.uint8))
+
+    raw_img_b = np.concatenate((compressed, downPool(4, input_img[0])[0]))#batch[0][0, 0]))
+    img_b = Image.fromarray(raw_img_b.astype(np.uint8))
     #img.save('my.bmp')
-    img.show()
-    
-    (state, is_done) = q_iteration(env, model, state, i)
+    img_a.show()
+    img_b.show()
+    #(state, is_done) = q_iteration(env, model, state, i)
     
     weights_1 = model_pre.get_layer("conv2d_3").get_weights()
-    weights_2 = model_pre.get_layer("conv2d_4").get_weights()            
+    weights_2 = model_pre.get_layer("conv2d_4").get_weights()
     model.get_layer("conv2d_1").set_weights(weights_1)
     model.get_layer("conv2d_2").set_weights(weights_2)
     model_pre.save("model_pre_20.HDF5")
-    
-    for _ in range(memoryBuffer.__len__()):
+
+    for i in range(memoryBuffer.__len__()):
+        if i % 1000 == 0:
+            target_model = copy_model(model)
+
         batch = memoryBuffer.sample_batch(BATCH_SIZE)
-        fit_batch(model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4], EPOCH)
-        
+       #batch[0][:, :, 0:48, :].fill(0)
+        fit_batch(model, target_model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4], PRE_EPOCH)
+
 
 
     while i<= 1000000:
 
         env.render()
+        if i % 5000 == 0:
+            target_model = copy_model(model)
 
-        (state, is_done) = q_iteration(env, model, state, i, memoryBuffer, model_pre)
+        (state, is_done) = q_iteration(env, model, target_model, state, i, memoryBuffer, model_pre)
         
 
         # Perform a random action, returns the new frame, reward and whether the game is over
         #frame, reward, is_done, _ = env.step(env.action_space.sample())
-          
-            
+
         if i % 5000 ==0 :
             print("saved:")
             print(i)
