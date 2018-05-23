@@ -23,8 +23,9 @@ def downsample(img):
 
 
 def preprocess(img):
-    return to_grayscale(downsample(img[0:208,:,:]))
-
+    img = to_grayscale(downsample(img[0:208, :, :]))
+    img = img[26:98, :]
+    return img
 
 def transform_reward(reward):
     return np.sign(reward)
@@ -32,12 +33,14 @@ def transform_reward(reward):
 
 def q_iteration(env, model, state, iteration):
 
-    epsilon =1
+    epsilon =0.1
     if random.random() < epsilon:
         action = env.action_space.sample()
 
     else:
         action = choose_best_action(model, state)
+        print(action)
+
 
 
 
@@ -45,6 +48,8 @@ def q_iteration(env, model, state, iteration):
     #print(action)
 
     new_frame, reward, is_done, _ = env.step(action)
+    if reward < 0 or iteration < 2:
+        new_frame, reward, is_done, _ = env.step(1)
     new_frame = preprocess(new_frame)  
     
     for i in range(numFrames-1):
@@ -60,13 +65,13 @@ def q_iteration(env, model, state, iteration):
 def choose_best_action(model, state):
 
     output = model.predict([state, np.ones((1, 4))], batch_size=None, verbose=0, steps=None)
-    #print(output)
+    print(output)
     return output.argmax()
 
 
 buffer_size = 500000
 #thread = trainThread(1, "Thread-1")
-numFrames = 2
+numFrames = 3
 NUM_ACTIONS = 4
 BATCH_SIZE = 64
 PRE_EPOCH = 8
@@ -76,7 +81,7 @@ PRETRAINING_TIMES = 0
 
 
 # We assume a theano backend here, so the "channels" are first.
-ATARI_SHAPE = (numFrames, 104, 80)
+ATARI_SHAPE = (numFrames, 72, 80)
 
 #epsilon
 LIMIT_1 = 100000 #epsilon = 1 untill this number
@@ -112,7 +117,7 @@ def main():
     action = env.action_space.sample()
     frame, reward, is_done, _ = env.step(action)
 
-    frames = np.zeros((1, numFrames,104,80))
+    frames = np.zeros((1, numFrames,ATARI_SHAPE[1], ATARI_SHAPE[2]))
     frame = preprocess(frame)
     frames[0][0] = frame
     actions = np.ones((1,NUM_ACTIONS))

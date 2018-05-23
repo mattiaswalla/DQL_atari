@@ -186,9 +186,9 @@ def downPool(size, frames):
     return goal
 
 def downPoolBatch(size, frames):
-    goal = np.zeros((len(frames), len(frames[0]), len(frames[0][0]) // 4, len(frames[0][0][0]) // 4))
+    goal = np.zeros((len(frames), len(frames[0]), len(frames[0][0]) // size, len(frames[0][0][0]) // size))
     for i in range(len(frames)):
-        goal[i] = downPool(4, frames[i])
+        goal[i] = downPool(size, frames[i])
     return goal
 
 def pre_train(model, frames, epochs_n):
@@ -197,7 +197,7 @@ def pre_train(model, frames, epochs_n):
     # Fit the keras model. Note how we are passing the actions as the mask and multiplying
     # the targets by the actions.
     # print(frames.shape)'
-    goal = downPoolBatch(4, frames)
+    goal = downPoolBatch(8, frames)
     #goal = np.zeros((len(frames), ATARI_SHAPE[0], ATARI_SHAPE[1]//4, ATARI_SHAPE[2]//4))
     #for i in range(len(frames)):
         #goal[i] = downPool(4, frames[i])
@@ -221,7 +221,7 @@ def pretraining_model():
 
     # "The first hidden layer convolves 16 8×8 filters with stride 4 with the input image and applies a rectifier nonlinearity."
     conv_1 = keras.layers.Conv2D(
-        16, (8, 8), strides = (2,2), activation='relu', padding='same'
+        16, (8, 8), strides = (4,4), activation='relu', padding='same'
     )(normalized)
 
     # "The second hidden layer convolves 32 4×4 filters with stride 2, again followed by a rectifier nonlinearity."
@@ -229,7 +229,7 @@ def pretraining_model():
         32, (4, 4), strides = (2,2), activation='relu', padding='same'
     )(conv_1)    
 
-    up_1 = keras.layers.UpSampling2D((2, 2))(conv_2)
+    up_1 = keras.layers.UpSampling2D((4, 4))(conv_2)
     # Autoencoding
 
     decoded_a = keras.layers.Conv2D(
@@ -256,7 +256,7 @@ def pretraining_model():
 
     #decoded_2 = keras.layers.Add()([decoded_2, decoded_aux])
 
-    unnormalized = keras.layers.Lambda(lambda x: x*255.0, output_shape = (numFrames, ATARI_SHAPE[1]//4, ATARI_SHAPE[2]//4))(decoded_2)
+    unnormalized = keras.layers.Lambda(lambda x: x*255.0, output_shape = (numFrames, ATARI_SHAPE[1]//8, ATARI_SHAPE[2]//8))(decoded_2)
     model = keras.models.Model(frames_input, [unnormalized, unnormalized_b])
     optimizer = keras.optimizers.RMSprop(lr=0.00025, rho=0.95, epsilon=0.01)
     model.compile(optimizer, loss='mse')
@@ -275,7 +275,7 @@ def atari_model( n_actions):
 
     # "The first hidden layer convolves 16 8×8 filters with stride 4 with the input image and applies a rectifier nonlinearity."
     conv_1 = keras.layers.Conv2D(
-        16, (8, 8), strides = (2,2), activation='relu', padding='same'
+        16, (8, 8), strides = (4,4), activation='relu', padding='same'
     )(normalized)
 
     # "The second hidden layer convolves 32 4×4 filters with stride 2, again followed by a rectifier nonlinearity."
@@ -312,8 +312,6 @@ def get_epsilon_for_iteration(iteration):
 def q_iteration(env, model, target_model, state, iteration, memory, model_pre):
     # Choose epsilon based on the iteration
     epsilon = get_epsilon_for_iteration(iteration)
-    output = model.predict([state, np.ones((1, 4))], batch_size=None, verbose=0, steps=None)
-    print(output)
 
 
     # Choose the action
@@ -350,7 +348,7 @@ def q_iteration(env, model, target_model, state, iteration, memory, model_pre):
 def choose_best_action(model, state):
 
     output = model.predict([state, np.ones((1, 4))], batch_size=None, verbose=0, steps=None)
-    print(output)
+    #print(output)
     return output.argmax()
 
 
@@ -421,7 +419,7 @@ def main():
     state = frames
     benchmark = 0
         
-    for _ in range(memoryBuffer.__len__()//40):
+    for _ in range(memoryBuffer.__len__()//400):
         batch = memoryBuffer.sample_batch(PRE_BATCH_SIZE)
         #batch[0][:, :, 0:20, :].fill(0)
         #batch[0][:, :, :, 0:10].fill(randint(0,255))
@@ -430,7 +428,7 @@ def main():
 
     batch = memoryBuffer.sample_batch(BATCH_SIZE)
 
-    print(model_pre.evaluate(batch[0],[downPoolBatch(4, batch[0]),batch[0]], BATCH_SIZE))
+    print(model_pre.evaluate(batch[0],[downPoolBatch(8, batch[0]),batch[0]], BATCH_SIZE))
     
     input_img = np.zeros((1, numFrames,ATARI_SHAPE[1], ATARI_SHAPE[2]))
     #batch[0][:, :, 0:48, :].fill(0)
@@ -443,7 +441,7 @@ def main():
     raw_img_a = np.concatenate((data, input_img[0][0]) ) # batch[0][0, 0]))
     img_a = Image.fromarray(raw_img_a.astype(np.uint8))
 
-    raw_img_b = np.concatenate((compressed, downPool(4, input_img[0])[0]))#batch[0][0, 0]))
+    raw_img_b = np.concatenate((compressed, downPool(8, input_img[0])[0]))#batch[0][0, 0]))
     img_b = Image.fromarray(raw_img_b.astype(np.uint8))
     #img.save('my.bmp')
     img_a.show()
@@ -456,20 +454,25 @@ def main():
     model.get_layer("conv2d_2").set_weights(weights_2)
     model_pre.save("model_pre_20.HDF5")
 
-    for i in range(memoryBuffer.__len__()):
-        if i % 1000 == 0:
+    for i in range(memoryBuffer.__len__()//1000):
+        if i < 1000:
+            target_model = model
+        elif i % 1000 == 0:
+            print("iteration ", i, " of guided pretraining" )
             target_model = copy_model(model)
 
         batch = memoryBuffer.sample_batch(BATCH_SIZE)
        #batch[0][:, :, 0:48, :].fill(0)
         fit_batch(model, target_model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4], PRE_EPOCH)
 
+        Q_values = []
 
-
-    while i<= 1000000:
+    while True:
 
         env.render()
-        if i % 5000 == 0:
+        if i < 1000:
+            target_model = model
+        elif i % 5000 == 0:
             target_model = copy_model(model)
 
         (state, is_done) = q_iteration(env, model, target_model, state, i, memoryBuffer, model_pre)
@@ -484,6 +487,10 @@ def main():
             print(benchmark)
             model.save("model_weights_2018_05_16_Guided_just_pretrain.HDF5")
             benchmark = 0
+            output = model.predict([state, np.ones((1, 4))], batch_size=None, verbose=0, steps=None)
+            print(output)
+            Q_values.append(output)
+            pickle.dump( Q_values ,open("saved_q_values.p", "wb"))
             #batch = memoryBuffer.reward_batch()
             #if( len(batch[0]) >0 and i < LIMIT_2): 
                 #fit_batch(model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4], REWARD_FRAME_SIZE )
