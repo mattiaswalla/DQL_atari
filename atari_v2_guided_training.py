@@ -333,7 +333,7 @@ def q_iteration(env, model, target_model, state, iteration, memory, model_pre):
     memory.append((action, new_frame, reward, is_done))
     
     for i in range(numFrames-1):
-        state[0][i-1] = state[0][i+1]
+        state[0][i] = state[0][i+1]
     state[0][numFrames - 1] = new_frame
 
 
@@ -419,7 +419,7 @@ def main():
     state = frames
     benchmark = 0
         
-    for _ in range(memoryBuffer.__len__()//400):
+    for _ in range(memoryBuffer.__len__()):
         batch = memoryBuffer.sample_batch(PRE_BATCH_SIZE)
         #batch[0][:, :, 0:20, :].fill(0)
         #batch[0][:, :, :, 0:10].fill(randint(0,255))
@@ -452,20 +452,21 @@ def main():
     weights_2 = model_pre.get_layer("conv2d_4").get_weights()
     model.get_layer("conv2d_1").set_weights(weights_1)
     model.get_layer("conv2d_2").set_weights(weights_2)
-    model_pre.save("model_pre_20.HDF5")
+    model_pre.save("model_pre_26.HDF5")
 
-    for i in range(memoryBuffer.__len__()//1000):
-        if i < 1000:
-            target_model = model
-        elif i % 1000 == 0:
-            print("iteration ", i, " of guided pretraining" )
-            target_model = copy_model(model)
+    memoryBuffer = RingBuf(buffer_size)
 
-        batch = memoryBuffer.sample_batch(BATCH_SIZE)
-       #batch[0][:, :, 0:48, :].fill(0)
-        fit_batch(model, target_model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4], PRE_EPOCH)
+    #for i in range(memoryBuffer.__len__()):
+        #if i < 1000:
+            #target_model = model
+        #elif i % 1000 == 0:
+            #print("iteration ", i, " of guided pretraining" )
+            #target_model = copy_model(model)
 
-        Q_values = []
+        #batch = memoryBuffer.sample_batch(BATCH_SIZE)
+        #fit_batch(model, target_model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4], PRE_EPOCH)
+
+        #Q_values = []
 
     while True:
 
@@ -485,12 +486,12 @@ def main():
             print("saved:")
             print(i)
             print(benchmark)
-            model.save("model_weights_2018_05_16_Guided_just_pretrain.HDF5")
+            model.save("model_weights_2018_05_26_Guided_just_pretrain.HDF5")
             benchmark = 0
             output = model.predict([state, np.ones((1, 4))], batch_size=None, verbose=0, steps=None)
             print(output)
             Q_values.append(output)
-            pickle.dump( Q_values ,open("saved_q_values.p", "wb"))
+            pickle.dump( Q_values ,open("saved_q_values_05_26.p", "wb"))
             #batch = memoryBuffer.reward_batch()
             #if( len(batch[0]) >0 and i < LIMIT_2): 
                 #fit_batch(model, 0.99, batch[0], batch[1], batch[2], batch[3], batch[4], REWARD_FRAME_SIZE )
